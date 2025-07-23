@@ -11,6 +11,8 @@ typedef struct webrtc_options_s {
   bool disabled;
   char ice_servers[WEBRTC_OPTIONS_LENGTH];
   bool disable_client_ice;
+  char signaling_url[WEBRTC_OPTIONS_LENGTH];
+  char signaling_peer[WEBRTC_OPTIONS_LENGTH];
 } webrtc_options_t;
 
 // WebRTC

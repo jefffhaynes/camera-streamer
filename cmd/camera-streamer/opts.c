@@ -135,6 +135,8 @@ option_t all_options[] = {
 
   DEFINE_OPTION_PTR(webrtc, ice_servers, list, "Specify ICE servers: [(stun|turn|turns)(:|://)][username:password@]hostname[:port][?transport=udp|tcp|tls)]."),
   DEFINE_OPTION_DEFAULT(webrtc, disable_client_ice, bool, "1", "Ignore ICE servers provided in '/webrtc' request."),
+  DEFINE_OPTION_PTR(webrtc, signaling_url, string, "URL of external WebSocket signaling server."),
+  DEFINE_OPTION_PTR(webrtc, signaling_peer, string, "Remote peer identifier on the signaling server."),
 
   DEFINE_OPTION_DEFAULT(log, debug, bool, "1", "Enable debug logging."),
   DEFINE_OPTION_DEFAULT(log, verbose, bool, "1", "Enable verbose logging."),

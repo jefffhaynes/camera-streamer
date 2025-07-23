@@ -19,6 +19,9 @@ The WebRTC is accessible via `http://<ip>:8080/webrtc` by default and is availab
 
 WebRTC support is implemented using awesome [libdatachannel](https://github.com/paullouisageneau/libdatachannel/) library.
 
+If a WebSocket signaling server is available, specify it using `-webrtc-signaling_url=<ws://server>`.
+Optionally set `-webrtc-signaling_peer=<id>` to direct offers to a specific peer.
+
 The support will be compiled by default when doing `make`.
 
 ## RTSP server
