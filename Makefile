@@ -30,6 +30,7 @@ USE_FFMPEG ?= $(shell pkg-config libavutil libavformat libavcodec && echo 1)
 USE_LIBCAMERA ?= $(shell pkg-config libcamera && echo 1)
 USE_RTSP ?= $(shell pkg-config live555 && echo 1)
 USE_LIBDATACHANNEL ?= $(shell [ -e $(LIBDATACHANNEL_PATH)/CMakeLists.txt ] && echo 1)
+USE_MQTT ?= $(shell pkg-config libmosquitto && echo 1)
 
 ifeq (1,$(DEBUG))
 CFLAGS += -g
@@ -63,6 +64,11 @@ LDLIBS += -L$(LIBDATACHANNEL_PATH)/build/deps/usrsctp/usrsctplib -lusrsctp
 LDLIBS += -L$(LIBDATACHANNEL_PATH)/build/deps/libsrtp -lsrtp2
 LDLIBS += -L$(LIBDATACHANNEL_PATH)/build/deps/libjuice -ljuice-static
 LDLIBS += -lcrypto -lssl
+endif
+
+ifeq (1,$(USE_MQTT))
+CFLAGS += $(shell pkg-config --cflags libmosquitto)
+LDLIBS += $(shell pkg-config --libs libmosquitto)
 endif
 
 HTML_SRC = $(addsuffix .c,$(HTML))

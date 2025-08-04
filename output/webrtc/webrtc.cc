@@ -35,7 +35,8 @@ extern "C" {
 #include <rtc/h264rtppacketizer.hpp>
 #include <rtc/h264packetizationhandler.hpp>
 #include <rtc/rtcpnackresponder.hpp>
-#include <rtc/websocket.hpp>
+#include <mosquitto.h>
+#include <unordered_map>
 
 #include "third_party/magic_enum/include/magic_enum.hpp"
 
@@ -47,8 +48,10 @@ struct ClientTrackData;
 static webrtc_options_t *webrtc_options;
 static std::set<std::shared_ptr<Client> > webrtc_clients;
 static std::mutex webrtc_clients_lock;
-static std::shared_ptr<rtc::WebSocket> signaling_ws;
-static std::string signaling_peer_id;
+static struct mosquitto *mqtt_connection;
+static std::string mqtt_sdp_base_topic;
+static std::string mqtt_ice_base_topic;
+static std::unordered_map<std::string, std::shared_ptr<Client>> mqtt_client_map;
 static std::shared_ptr<Client> signaling_client;
 
 static const auto webrtc_client_lock_timeout = 3 * 1000ms;
@@ -58,7 +61,10 @@ static rtc::Configuration webrtc_configuration = {
   // .iceServers = { rtc::IceServer("stun:stun.l.google.com:19302") },
   .disableAutoNegotiation = true
 };
-static void signaling_start();
+static void signaling_connect();
+static std::shared_ptr<ClientTrackData> webrtc_add_video(const std::shared_ptr<rtc::PeerConnection> pc, const uint8_t payloadType, const uint32_t ssrc, const std::string cname, const std::string msid);
+static void webrtc_parse_ice_servers(rtc::Configuration &config, const nlohmann::json &message);
+static std::shared_ptr<Client> webrtc_peer_connection(rtc::Configuration config, const nlohmann::json &message);
 
 struct ClientTrackData
 {
@@ -161,6 +167,8 @@ public:
     return video->wantsFrame();
   }
 
+  std::string client_id;
+
   void pushFrame(buffer_t *buf)
   {
     if (!video || !video->track) {
@@ -243,60 +251,154 @@ void webrtc_remove_client(const std::shared_ptr<Client> &client, const char *rea
 {
   std::unique_lock lk(webrtc_clients_lock);
   webrtc_clients.erase(client);
+  if (!client->client_id.empty())
+    mqtt_client_map.erase(client->client_id);
   LOG_INFO(client.get(), "Client removed: %s.", reason);
 }
 
-static void signaling_connect()
+static std::string mqtt_get_topic(const std::string &topic, const std::string &client_id = "")
 {
-  if (!webrtc_options || !webrtc_options->signaling_url[0])
-    return;
+  std::string result;
+  if (webrtc_options->mqtt_uid[0]) {
+    result = std::string(webrtc_options->mqtt_uid) + "/";
+  }
+  result += topic;
+  if (!client_id.empty())
+    result += "/" + client_id;
+  return result;
+}
 
-  signaling_peer_id = webrtc_options->signaling_peer;
-
-  signaling_ws = std::make_shared<rtc::WebSocket>();
-  signaling_ws->onOpen([]() {
-    LOG_INFO(NULL, "Connected to signaling server");
-    if (!signaling_client) {
-      // Start peer connection immediately when using external signaling
-      signaling_start();
-    }
-  });
-  signaling_ws->onClosed([]() {
-    LOG_INFO(NULL, "Signaling server connection closed");
-  });
-    signaling_ws->onError([](std::string err) {
-      LOG_INFO(NULL, "Signaling error: %s", err.c_str());
-    });
-  signaling_ws->onMessage([](auto msg) {
-    if (!std::holds_alternative<rtc::string>(msg))
-      return;
-    try {
-      auto j = nlohmann::json::parse(std::get<rtc::string>(msg));
-      auto type = j.value("type", std::string());
-        if (type == "answer" && signaling_client) {
-          auto answer = rtc::Description(j["sdp"].template get<std::string>(), type);
-          std::unique_lock lock(signaling_client->lock);
-          signaling_client->pc->setRemoteDescription(answer);
-          signaling_client->has_set_sdp_answer = true;
-        } else if (type == "candidate" && signaling_client) {
-          auto cand = rtc::Candidate(j["candidate"].template get<std::string>(), j["sdpMid"].template get<std::string>());
-          std::unique_lock lock(signaling_client->lock);
-          if (signaling_client->has_set_sdp_answer)
-            signaling_client->pc->addRemoteCandidate(cand);
-          else
-            signaling_client->pending_remote_candidates.push_back(cand);
-        }
-      } catch(const std::exception &e) {
-        LOG_INFO(NULL, "Failed to parse signaling message: %s", e.what());
-      }
-    });
-  signaling_ws->open(webrtc_options->signaling_url);
+static std::string mqtt_get_client_id(const std::string &topic, const std::string &base)
+{
+  size_t start = base.size() + 1;
+  size_t end = topic.find('/', start);
+  if (end == std::string::npos)
+    return std::string();
+  return topic.substr(start, end - start);
 }
 
 static void signaling_send(const nlohmann::json &message)
 {
-  if (signaling_ws)
-    signaling_ws->send(message.dump());
+  if (!mqtt_connection || !signaling_client || signaling_client->client_id.empty())
+    return;
+
+  std::string payload = message.dump();
+  std::string topic;
+  auto type = message.value("type", std::string());
+  if (type == "answer")
+    topic = mqtt_get_topic("sdp", signaling_client->client_id);
+  else if (type == "candidate")
+    topic = mqtt_get_topic("ice", signaling_client->client_id);
+  else
+    return;
+
+  mosquitto_publish(mqtt_connection, NULL, topic.c_str(), payload.size(), payload.c_str(), 1, false);
+}
+
+static void signaling_handle_offer(const std::string &client_id, const nlohmann::json &message)
+{
+  auto offer = rtc::Description(message["sdp"].get<std::string>(), message["type"].get<std::string>());
+  auto config = webrtc_configuration;
+  webrtc_parse_ice_servers(config, message);
+  auto client = webrtc_peer_connection(config, message);
+  client->client_id = client_id;
+  mqtt_client_map[client_id] = client;
+
+  try {
+    client->video = webrtc_add_video(client->pc, webrtc_client_video_payload_type, rand(), "video", "");
+    {
+      std::unique_lock lock(client->lock);
+      client->pc->setRemoteDescription(offer);
+      client->has_set_sdp_answer = true;
+      client->pc->setLocalDescription();
+      client->wait_for_complete.wait_for(lock, webrtc_client_lock_timeout);
+    }
+
+    if (client->pc->gatheringState() == rtc::PeerConnection::GatheringState::Complete) {
+      auto description = client->pc->localDescription();
+      nlohmann::json answer;
+      answer["type"] = description->typeString();
+      answer["sdp"] = std::string(description.value());
+      signaling_client = client;
+      signaling_send(answer);
+      LOG_VERBOSE(client.get(), "Local SDP Answer: %s", std::string(answer["sdp"]).c_str());
+    }
+  } catch(const std::exception &e) {
+    webrtc_remove_client(client, e.what());
+  }
+}
+
+static void mqtt_on_connect(struct mosquitto *mosq, void *, int result)
+{
+  if (result != 0) {
+    LOG_INFO(NULL, "MQTT connect failed: %d", result);
+    return;
+  }
+  mosquitto_subscribe(mosq, nullptr, (mqtt_sdp_base_topic + "/+/offer").c_str(), 0);
+  mosquitto_subscribe(mosq, nullptr, (mqtt_ice_base_topic + "/+/offer").c_str(), 0);
+  LOG_INFO(NULL, "Connected to MQTT broker");
+}
+
+static void mqtt_on_message(struct mosquitto *mosq, void *, const struct mosquitto_message *msg)
+{
+  if (!msg->payload)
+    return;
+
+  std::string topic(msg->topic);
+  std::string payload(static_cast<const char*>(msg->payload), msg->payloadlen);
+
+  try {
+    if (topic.rfind(mqtt_sdp_base_topic, 0) == 0) {
+      std::string cid = mqtt_get_client_id(topic, mqtt_sdp_base_topic);
+      auto j = nlohmann::json::parse(payload);
+      signaling_handle_offer(cid, j);
+    } else if (topic.rfind(mqtt_ice_base_topic, 0) == 0) {
+      std::string cid = mqtt_get_client_id(topic, mqtt_ice_base_topic);
+      auto it = mqtt_client_map.find(cid);
+      if (it != mqtt_client_map.end()) {
+        auto client = it->second;
+        auto j = nlohmann::json::parse(payload);
+        auto cand = rtc::Candidate(j["candidate"].get<std::string>(), j["sdpMid"].get<std::string>());
+        std::unique_lock lock(client->lock);
+        if (client->has_set_sdp_answer)
+          client->pc->addRemoteCandidate(cand);
+        else
+          client->pending_remote_candidates.push_back(cand);
+      }
+    }
+  } catch(const std::exception &e) {
+    LOG_INFO(NULL, "Failed to parse MQTT message: %s", e.what());
+  }
+}
+
+static void signaling_connect()
+{
+  if (!webrtc_options || !webrtc_options->mqtt_host[0])
+    return;
+
+  mosquitto_lib_init();
+  mqtt_connection = mosquitto_new(NULL, true, NULL);
+  if (!mqtt_connection) {
+    LOG_INFO(NULL, "Failed to create mosquitto instance");
+    return;
+  }
+
+  if (webrtc_options->mqtt_username[0])
+    mosquitto_username_pw_set(mqtt_connection, webrtc_options->mqtt_username, webrtc_options->mqtt_password);
+
+  mosquitto_connect_callback_set(mqtt_connection, mqtt_on_connect);
+  mosquitto_message_callback_set(mqtt_connection, mqtt_on_message);
+
+  mqtt_sdp_base_topic = mqtt_get_topic("sdp");
+  mqtt_ice_base_topic = mqtt_get_topic("ice");
+
+  int rc = mosquitto_connect_async(mqtt_connection, webrtc_options->mqtt_host, webrtc_options->mqtt_port, 60);
+  if (rc != MOSQ_ERR_SUCCESS) {
+    LOG_INFO(NULL, "MQTT connect failed: %s", mosquitto_strerror(rc));
+    return;
+  }
+
+  mosquitto_loop_start(mqtt_connection);
 }
 
 static std::shared_ptr<ClientTrackData> webrtc_add_video(const std::shared_ptr<rtc::PeerConnection> pc, const uint8_t payloadType, const uint32_t ssrc, const std::string cname, const std::string msid)
@@ -457,36 +559,6 @@ static std::shared_ptr<Client> webrtc_peer_connection(rtc::Configuration config,
   return client;
 }
 
-static void signaling_start()
-{
-  nlohmann::json message;
-
-  auto config = webrtc_configuration;
-  auto client = webrtc_peer_connection(config, message);
-  client->video = webrtc_add_video(client->pc, webrtc_client_video_payload_type, rand(), "video", "");
-
-  try {
-    {
-      std::unique_lock lock(client->lock);
-      client->pc->setLocalDescription();
-      client->wait_for_complete.wait_for(lock, webrtc_client_lock_timeout);
-    }
-    if (client->pc->gatheringState() == rtc::PeerConnection::GatheringState::Complete) {
-      auto description = client->pc->localDescription();
-      message["id"] = client->id;
-      message["type"] = description->typeString();
-      message["sdp"] = std::string(description.value());
-      if (!signaling_peer_id.empty())
-        message["to"] = signaling_peer_id;
-      signaling_client = client;
-      signaling_send(message);
-      LOG_VERBOSE(client.get(), "Local SDP Offer: %s", std::string(message["sdp"]).c_str());
-    }
-  } catch(const std::exception &e) {
-    webrtc_remove_client(client, e.what());
-  }
-}
-
 static bool webrtc_h264_needs_buffer(buffer_lock_t *buf_lock)
 {
   std::unique_lock lk(webrtc_clients_lock);
@@ -539,10 +611,6 @@ static void http_webrtc_request(http_worker_t *worker, FILE *stream, const nlohm
       message["keepAlive"] = client->wantsKeepAlive();
       client->describePeerConnection(message);
       http_write_response(stream, "200 OK", "application/json", message.dump().c_str(), 0);
-      signaling_client = client;
-      signaling_send(message);
-      signaling_client = client;
-      signaling_send(message);
       LOG_VERBOSE(client.get(), "Local SDP Offer: %s", std::string(message["sdp"]).c_str());
     } else {
       http_500(stream, "Not complete");
