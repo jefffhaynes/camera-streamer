@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdio.h>
+#include <stdint.h>
 
 #define WEBRTC_OPTIONS_LENGTH 4096
 
@@ -11,8 +12,11 @@ typedef struct webrtc_options_s {
   bool disabled;
   char ice_servers[WEBRTC_OPTIONS_LENGTH];
   bool disable_client_ice;
-  char signaling_url[WEBRTC_OPTIONS_LENGTH];
-  char signaling_peer[WEBRTC_OPTIONS_LENGTH];
+  char mqtt_host[WEBRTC_OPTIONS_LENGTH];
+  unsigned int mqtt_port;
+  char mqtt_username[WEBRTC_OPTIONS_LENGTH];
+  char mqtt_password[WEBRTC_OPTIONS_LENGTH];
+  char mqtt_uid[WEBRTC_OPTIONS_LENGTH];
 } webrtc_options_t;
 
 // WebRTC

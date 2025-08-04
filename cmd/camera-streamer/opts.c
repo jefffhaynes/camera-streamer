@@ -62,6 +62,7 @@ rtsp_options_t rtsp_options = {
 };
 
 webrtc_options_t webrtc_options = {
+  .mqtt_port = 1883,
 };
 
 option_value_t camera_formats[] = {
@@ -135,8 +136,11 @@ option_t all_options[] = {
 
   DEFINE_OPTION_PTR(webrtc, ice_servers, list, "Specify ICE servers: [(stun|turn|turns)(:|://)][username:password@]hostname[:port][?transport=udp|tcp|tls)]."),
   DEFINE_OPTION_DEFAULT(webrtc, disable_client_ice, bool, "1", "Ignore ICE servers provided in '/webrtc' request."),
-  DEFINE_OPTION_PTR(webrtc, signaling_url, string, "URL of external WebSocket signaling server."),
-  DEFINE_OPTION_PTR(webrtc, signaling_peer, string, "Remote peer identifier on the signaling server."),
+  DEFINE_OPTION_PTR(webrtc, mqtt_host, string, "Hostname of MQTT signaling broker."),
+  DEFINE_OPTION(webrtc, mqtt_port, uint, "Port of MQTT signaling broker."),
+  DEFINE_OPTION_PTR(webrtc, mqtt_username, string, "MQTT username."),
+  DEFINE_OPTION_PTR(webrtc, mqtt_password, string, "MQTT password."),
+  DEFINE_OPTION_PTR(webrtc, mqtt_uid, string, "MQTT topic UID prefix."),
 
   DEFINE_OPTION_DEFAULT(log, debug, bool, "1", "Enable debug logging."),
   DEFINE_OPTION_DEFAULT(log, verbose, bool, "1", "Enable verbose logging."),
