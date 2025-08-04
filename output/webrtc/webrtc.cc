@@ -42,6 +42,7 @@ extern "C" {
 using namespace std::chrono_literals;
 
 class Client;
+struct ClientTrackData;
 
 static webrtc_options_t *webrtc_options;
 static std::set<std::shared_ptr<Client> > webrtc_clients;
@@ -50,35 +51,6 @@ static std::shared_ptr<rtc::WebSocket> signaling_ws;
 static std::string signaling_peer_id;
 static std::shared_ptr<Client> signaling_client;
 
-static void signaling_start()
-{
-  nlohmann::json message;
-
-  auto config = webrtc_configuration;
-  auto client = webrtc_peer_connection(config, message);
-  client->video = webrtc_add_video(client->pc, webrtc_client_video_payload_type, rand(), "video", "");
-
-  try {
-    {
-      std::unique_lock lock(client->lock);
-      client->pc->setLocalDescription();
-      client->wait_for_complete.wait_for(lock, webrtc_client_lock_timeout);
-    }
-    if (client->pc->gatheringState() == rtc::PeerConnection::GatheringState::Complete) {
-      auto description = client->pc->localDescription();
-      message["id"] = client->id;
-      message["type"] = description->typeString();
-      message["sdp"] = std::string(description.value());
-      if (!signaling_peer_id.empty())
-        message["to"] = signaling_peer_id;
-      signaling_client = client;
-      signaling_send(message);
-      LOG_VERBOSE(client.get(), "Local SDP Offer: %s", std::string(message["sdp"]).c_str());
-    }
-  } catch(const std::exception &e) {
-    webrtc_remove_client(client, e.what());
-  }
-}
 static const auto webrtc_client_lock_timeout = 3 * 1000ms;
 static const auto webrtc_client_max_json_body = 10 * 1024;
 static const auto webrtc_client_video_payload_type = 102; // H264
@@ -86,11 +58,7 @@ static rtc::Configuration webrtc_configuration = {
   // .iceServers = { rtc::IceServer("stun:stun.l.google.com:19302") },
   .disableAutoNegotiation = true
 };
-
-static void signaling_connect();
-
-std::shared_ptr<Client> webrtc_find_client(std::string id);
-void webrtc_remove_client(const std::shared_ptr<Client> &client, const char *reason);
+static void signaling_start();
 
 struct ClientTrackData
 {
@@ -296,32 +264,32 @@ static void signaling_connect()
   signaling_ws->onClosed([]() {
     LOG_INFO(NULL, "Signaling server connection closed");
   });
-  signaling_ws->onError([](std::string err) {
-    LOG_ERROR(NULL, "Signaling error: %s", err.c_str());
-  });
+    signaling_ws->onError([](std::string err) {
+      LOG_INFO(NULL, "Signaling error: %s", err.c_str());
+    });
   signaling_ws->onMessage([](auto msg) {
     if (!std::holds_alternative<rtc::string>(msg))
       return;
     try {
       auto j = nlohmann::json::parse(std::get<rtc::string>(msg));
       auto type = j.value("type", std::string());
-      if (type == "answer" && signaling_client) {
-        auto answer = rtc::Description(j["sdp"].get<std::string>(), type);
-        std::unique_lock lock(signaling_client->lock);
-        signaling_client->pc->setRemoteDescription(answer);
-        signaling_client->has_set_sdp_answer = true;
-      } else if (type == "candidate" && signaling_client) {
-        auto cand = rtc::Candidate(j["candidate"].get<std::string>(), j["sdpMid"].get<std::string>());
-        std::unique_lock lock(signaling_client->lock);
-        if (signaling_client->has_set_sdp_answer)
-          signaling_client->pc->addRemoteCandidate(cand);
-        else
-          signaling_client->pending_remote_candidates.push_back(cand);
+        if (type == "answer" && signaling_client) {
+          auto answer = rtc::Description(j["sdp"].template get<std::string>(), type);
+          std::unique_lock lock(signaling_client->lock);
+          signaling_client->pc->setRemoteDescription(answer);
+          signaling_client->has_set_sdp_answer = true;
+        } else if (type == "candidate" && signaling_client) {
+          auto cand = rtc::Candidate(j["candidate"].template get<std::string>(), j["sdpMid"].template get<std::string>());
+          std::unique_lock lock(signaling_client->lock);
+          if (signaling_client->has_set_sdp_answer)
+            signaling_client->pc->addRemoteCandidate(cand);
+          else
+            signaling_client->pending_remote_candidates.push_back(cand);
+        }
+      } catch(const std::exception &e) {
+        LOG_INFO(NULL, "Failed to parse signaling message: %s", e.what());
       }
-    } catch(const std::exception &e) {
-      LOG_ERROR(NULL, "Failed to parse signaling message: %s", e.what());
-    }
-  });
+    });
   signaling_ws->open(webrtc_options->signaling_url);
 }
 
@@ -487,6 +455,36 @@ static std::shared_ptr<Client> webrtc_peer_connection(rtc::Configuration config,
   std::unique_lock lk(webrtc_clients_lock);
   webrtc_clients.insert(client);
   return client;
+}
+
+static void signaling_start()
+{
+  nlohmann::json message;
+
+  auto config = webrtc_configuration;
+  auto client = webrtc_peer_connection(config, message);
+  client->video = webrtc_add_video(client->pc, webrtc_client_video_payload_type, rand(), "video", "");
+
+  try {
+    {
+      std::unique_lock lock(client->lock);
+      client->pc->setLocalDescription();
+      client->wait_for_complete.wait_for(lock, webrtc_client_lock_timeout);
+    }
+    if (client->pc->gatheringState() == rtc::PeerConnection::GatheringState::Complete) {
+      auto description = client->pc->localDescription();
+      message["id"] = client->id;
+      message["type"] = description->typeString();
+      message["sdp"] = std::string(description.value());
+      if (!signaling_peer_id.empty())
+        message["to"] = signaling_peer_id;
+      signaling_client = client;
+      signaling_send(message);
+      LOG_VERBOSE(client.get(), "Local SDP Offer: %s", std::string(message["sdp"]).c_str());
+    }
+  } catch(const std::exception &e) {
+    webrtc_remove_client(client, e.what());
+  }
 }
 
 static bool webrtc_h264_needs_buffer(buffer_lock_t *buf_lock)
