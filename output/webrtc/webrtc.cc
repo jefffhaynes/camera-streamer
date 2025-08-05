@@ -30,7 +30,6 @@ extern "C" {
 #include <atomic>
 #include <chrono>
 #include <set>
-#include <vector>
 #include <rtc/peerconnection.hpp>
 #include <rtc/rtcpsrreporter.hpp>
 #include <rtc/h264rtppacketizer.hpp>
@@ -416,7 +415,7 @@ static std::shared_ptr<ClientTrackData> webrtc_add_video(const std::shared_ptr<r
   video.setBitrate(1000);
   std::string stream_id = msid.empty() ? "stream-" + std::to_string(ssrc) : msid;
   video.addSSRC(ssrc, cname, stream_id, cname);
-  auto track = pc->addTrack(video, {stream_id});
+  auto track = pc->addTrack(video);
   auto rtpConfig = std::make_shared<rtc::RtpPacketizationConfig>(ssrc, cname, payloadType, rtc::H264RtpPacketizer::defaultClockRate);
   auto packetizer = std::make_shared<rtc::H264RtpPacketizer>(rtc::H264RtpPacketizer::Separator::LongStartSequence, rtpConfig);
   auto h264Handler = std::make_shared<rtc::H264PacketizationHandler>(packetizer);
