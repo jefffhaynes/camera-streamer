@@ -305,7 +305,7 @@ static void signaling_handle_offer(const std::string &client_id, const nlohmann:
   mqtt_client_map[client_id] = client;
 
   try {
-    client->video = webrtc_add_video(client->pc, webrtc_client_video_payload_type, rand(), "video", "");
+    client->video = webrtc_add_video(client->pc, webrtc_client_video_payload_type, rand(), "video", client->id);
     {
       std::unique_lock lock(client->lock);
       client->pc->setRemoteDescription(offer);
@@ -600,7 +600,7 @@ static void http_webrtc_request(http_worker_t *worker, FILE *stream, const nlohm
   auto client = webrtc_peer_connection(webrtc_configuration, message);
   LOG_INFO(client.get(), "Stream requested.");
 
-  client->video = webrtc_add_video(client->pc, webrtc_client_video_payload_type, rand(), "video", "");
+  client->video = webrtc_add_video(client->pc, webrtc_client_video_payload_type, rand(), "video", client->id);
 
   try {
     {
@@ -673,7 +673,7 @@ static void http_webrtc_offer(http_worker_t *worker, FILE *stream, const nlohman
   LOG_VERBOSE(client.get(), "Remote SDP Offer: %s", std::string(message["sdp"]).c_str());
 
   try {
-    client->video = webrtc_add_video(client->pc, webrtc_client_video_payload_type, rand(), "video", "");
+    client->video = webrtc_add_video(client->pc, webrtc_client_video_payload_type, rand(), "video", client->id);
 
     {
       std::unique_lock lock(client->lock);

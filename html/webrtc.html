@@ -87,8 +87,13 @@
           pc.remote_pc_id = request.id;
           pc.addTransceiver('video', { direction: 'recvonly' });
           pc.addEventListener('track', function(evt) {
+            var stream = evt.streams[0];
+            if (!stream) {
+              stream = new MediaStream();
+              stream.addTrack(evt.track);
+            }
             if (document.getElementById('stream'))
-              document.getElementById('stream').srcObject = evt.streams[0];
+              document.getElementById('stream').srcObject = stream;
           });
           pc.addEventListener("icecandidate", function(e) {
             if (e.candidate) {
