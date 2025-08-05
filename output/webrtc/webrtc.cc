@@ -413,7 +413,8 @@ static std::shared_ptr<ClientTrackData> webrtc_add_video(const std::shared_ptr<r
   auto video = rtc::Description::Video(cname, rtc::Description::Direction::SendOnly);
   video.addH264Codec(payloadType);
   video.setBitrate(1000);
-  video.addSSRC(ssrc, cname, msid, cname);
+  std::string stream_id = msid.empty() ? "stream-" + std::to_string(ssrc) : msid;
+  video.addSSRC(ssrc, cname, stream_id, cname);
   auto track = pc->addTrack(video);
   auto rtpConfig = std::make_shared<rtc::RtpPacketizationConfig>(ssrc, cname, payloadType, rtc::H264RtpPacketizer::defaultClockRate);
   auto packetizer = std::make_shared<rtc::H264RtpPacketizer>(rtc::H264RtpPacketizer::Separator::LongStartSequence, rtpConfig);
