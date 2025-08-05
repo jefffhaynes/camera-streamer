@@ -331,7 +331,7 @@ static void signaling_handle_offer(const std::string &client_id, const nlohmann:
 static void mqtt_on_connect(struct mosquitto *mosq, void *, int result)
 {
   if (result != 0) {
-    LOG_INFO(NULL, "MQTT connect failed: %d", result);
+    LOG_INFO(NULL, "MQTT connect failed: %s", mosquitto_strerror(result));
     return;
   }
   mosquitto_subscribe(mosq, nullptr, (mqtt_sdp_base_topic + "/+/offer").c_str(), 0);
@@ -383,6 +383,11 @@ static void signaling_connect()
     return;
   }
 
+  mosquitto_int_option(mqtt_connection, MOSQ_OPT_PROTOCOL_VERSION, MQTT_PROTOCOL_V5);
+  if (webrtc_options->mqtt_port == 8883) {
+      mosquitto_int_option(mqtt_connection, MOSQ_OPT_TLS_USE_OS_CERTS, 1);
+  }
+
   if (webrtc_options->mqtt_username[0])
     mosquitto_username_pw_set(mqtt_connection, webrtc_options->mqtt_username, webrtc_options->mqtt_password);
 
@@ -397,6 +402,8 @@ static void signaling_connect()
     LOG_INFO(NULL, "MQTT connect failed: %s", mosquitto_strerror(rc));
     return;
   }
+
+  LOG_INFO(NULL, "MQTT connected successfully");
 
   mosquitto_loop_start(mqtt_connection);
 }
