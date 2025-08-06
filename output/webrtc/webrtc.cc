@@ -52,7 +52,6 @@ static struct mosquitto *mqtt_connection;
 static std::string mqtt_sdp_base_topic;
 static std::string mqtt_ice_base_topic;
 static std::unordered_map<std::string, std::shared_ptr<Client>> mqtt_client_map;
-static std::shared_ptr<Client> signaling_client;
 
 static const auto webrtc_client_lock_timeout = 3 * 1000ms;
 static const auto webrtc_client_max_json_body = 10 * 1024;
@@ -277,25 +276,28 @@ static std::string mqtt_get_client_id(const std::string &topic, const std::strin
   return topic.substr(start, end - start);
 }
 
-static void signaling_send(const nlohmann::json &message)
+static void signaling_send(const std::shared_ptr<Client> &client,
+  const nlohmann::json &message)
 {
-  if (!mqtt_connection || !signaling_client || signaling_client->client_id.empty())
+  if (!mqtt_connection || !client || client->client_id.empty())
     return;
 
   std::string payload = message.dump();
   std::string topic;
   auto type = message.value("type", std::string());
   if (type == "answer")
-    topic = mqtt_get_topic("sdp", signaling_client->client_id);
+    topic = mqtt_get_topic("sdp", client->client_id);
   else if (type == "candidate")
-    topic = mqtt_get_topic("ice", signaling_client->client_id);
+    topic = mqtt_get_topic("ice", client->client_id);
   else
     return;
 
-  mosquitto_publish(mqtt_connection, NULL, topic.c_str(), payload.size(), payload.c_str(), 1, false);
+  mosquitto_publish(mqtt_connection, NULL, topic.c_str(), payload.size(),
+    payload.c_str(), 1, false);
 }
 
-static void signaling_handle_offer(const std::string &client_id, const nlohmann::json &message)
+static void signaling_handle_offer(const std::string &client_id,
+  const nlohmann::json &message)
 {
   auto offer = rtc::Description(message["sdp"].get<std::string>(), message["type"].get<std::string>());
   auto config = webrtc_configuration;
@@ -312,15 +314,23 @@ static void signaling_handle_offer(const std::string &client_id, const nlohmann:
       client->has_set_sdp_answer = true;
       client->pc->setLocalDescription();
       client->wait_for_complete.wait_for(lock, webrtc_client_lock_timeout);
+
+      // Apply any candidates that arrived before the local description was set
+      for (auto const &cand : client->pending_remote_candidates)
+        client->pc->addRemoteCandidate(cand);
+      client->pending_remote_candidates.clear();
     }
 
     if (client->pc->gatheringState() == rtc::PeerConnection::GatheringState::Complete) {
       auto description = client->pc->localDescription();
       nlohmann::json answer;
+      answer["id"] = client->id;
       answer["type"] = description->typeString();
       answer["sdp"] = std::string(description.value());
-      signaling_client = client;
-      signaling_send(answer);
+      answer["keepAlive"] = client->wantsKeepAlive();
+      client->describePeerConnection(answer);
+
+      signaling_send(client, answer);
       LOG_VERBOSE(client.get(), "Local SDP Answer: %s", std::string(answer["sdp"]).c_str());
     }
   } catch(const std::exception &e) {
@@ -523,8 +533,7 @@ static std::shared_ptr<Client> webrtc_peer_connection(rtc::Configuration config,
       msg["id"] = client->id;
       msg["candidate"] = candidate.candidate();
       msg["sdpMid"] = candidate.mid();
-      signaling_client = client;
-      signaling_send(msg);
+      signaling_send(client, msg);
     }
   });
 
